@@ -42,6 +42,8 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
         var fastAsPossible = false;
         var fastTape = false;
         var noSeek = false;
+        var pauseEmu = false;
+        var stepEmuWhenPaused = false;
         var audioFilterFreq = 7000;
         var audioFilterQ = 5;
 
@@ -294,17 +296,14 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
                     switch (ret) {
                         case keyCodes.SHIFT:
                             lastShiftLocation = 1;
-                            //console.log("left shift");
                             return keyCodes.SHIFT_LEFT;
 
                         case keyCodes.ALT:
                             lastAltLocation = 1;
-                            //console.log("left alt");
                             return keyCodes.ALT_LEFT;
 
                         case keyCodes.CTRL:
                             lastCtrlLocation = 1;
-                            //console.log("left ctrl");
                             return keyCodes.CTRL_LEFT;
                     }
                     break;
@@ -312,28 +311,23 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
                     switch (ret) {
                         case keyCodes.SHIFT:
                             lastShiftLocation = 2;
-                            //console.log("right shift");
                             return keyCodes.SHIFT_RIGHT;
 
                         case keyCodes.ALT:
                             lastAltLocation = 2;
-                            //console.log("right alt");
                             return keyCodes.ALT_RIGHT;
 
                         case keyCodes.CTRL:
                             lastCtrlLocation = 2;
-                            //console.log("right ctrl");
                             return keyCodes.CTRL_RIGHT;
                     }
                     break;
                 case 3: // numpad
                     switch (ret) {
                         case keyCodes.ENTER:
-                            console.log("numpad enter");
                             return utils.keyCodes.NUMPADENTER;
 
                         case keyCodes.DELETE:
-                            console.log("numpad dot");
                             return utils.keyCodes.NUMPAD_DECIMAL_POINT;
                     }
                     break;
@@ -344,12 +338,23 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
 
         function keyPress(evt) {
             if (document.activeElement.id === 'paste-text') return;
-            if (running || !dbgr.enabled()) return;
+            if (running || (!dbgr.enabled() && !pauseEmu)) return;
             var code = keyCode(evt);
-            if (code === 103 /* lower case g */) {
+            if (dbgr.enabled() && code === 103 /* lower case g */) {
                 dbgr.hide();
                 go();
                 return;
+            }
+            if (pauseEmu) {
+                if (code === 103 /* lower case g */) {
+                    pauseEmu = false;
+                    go();
+                    return;
+                } else if (code === 110 /* lower case n */) {
+                    stepEmuWhenPaused = true;
+                    go();
+                    return;
+                }
             }
             var handled = dbgr.keyPress(keyCode(evt));
             if (handled) evt.preventDefault();
@@ -383,10 +388,20 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
             } else if (code === utils.keyCodes.INSERT && evt.ctrlKey) {
                 utils.noteEvent('keyboard', 'press', 'insert');
                 fastAsPossible = !fastAsPossible;
+            } else if (code === utils.keyCodes.END && evt.ctrlKey) {
+                utils.noteEvent('keyboard', 'press', 'end');
+                pauseEmu = true;
+                stop(false);
             } else if (code === utils.keyCodes.F12 || code === utils.keyCodes.BREAK) {
                 utils.noteEvent('keyboard', 'press', 'break');
                 processor.setReset(true);
                 evt.preventDefault();
+            } else if (code === utils.keyCodes.B && evt.ctrlKey) {
+                // Ctrl-B turns on the printer, so we open a printer output
+                // window in addition to passing the keypress along to the beeb.
+                processor.sysvia.keyDown(keyCode(evt), evt.shiftKey);
+                evt.preventDefault();
+                checkPrinterWindow();
             } else {
                 processor.sysvia.keyDown(keyCode(evt), evt.shiftKey);
                 evt.preventDefault();
@@ -397,7 +412,8 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
             if (document.activeElement.id === 'paste-text') return;
             // Always let the key ups come through. That way we don't cause sticky keys in the debugger.
             var code = keyCode(evt);
-            processor.sysvia.keyUp(code);
+            if (processor && processor.sysvia)
+                processor.sysvia.keyUp(code);
             if (!running) return;
             if (evt.altKey) {
                 var handler = emuKeyHandlers[code];
@@ -468,11 +484,11 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
 
         // To lower chance of data loss, only accept drop events in the drop
         // zone in the menu bar.
-        document.ondragover = function(event) {
+        document.ondragover = function (event) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "none";
         };
-        document.ondrop = function(event) {
+        document.ondrop = function (event) {
             event.preventDefault();
         };
 
@@ -519,12 +535,40 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
             };
         }
 
+        var printerWindow = null;
+        var printerTextArea = null;
+
+        function checkPrinterWindow() {
+            if (printerWindow && !printerWindow.closed) return;
+
+            printerWindow = window.open('', '_blank', 'height=300,width=400');
+            printerWindow.document.write('<textarea id="text" rows="15" cols="40" placeholder="Printer outputs here..."></textarea>');
+            printerTextArea = printerWindow.document.getElementById('text');
+
+            processor.uservia.setca1(true);
+        }
+
+        var printerPort = {
+            outputStrobe: function (level, output) {
+                if (!printerTextArea) return;
+                if (!output || level) return;
+
+                var uservia = processor.uservia;
+                // Ack the character by pulsing CA1 low.
+                uservia.setca1(false);
+                uservia.setca1(true);
+                var newChar = String.fromCharCode(uservia.ora);
+                printerTextArea.value += newChar;
+            }
+        };
+
         var emulationConfig = {
             keyLayout: keyLayout,
             cpuMultiplier: cpuMultiplier,
             videoCyclesBatch: parsedQuery.videoCyclesBatch,
             extraRoms: extraRoms,
-            userPort: userPort
+            userPort: userPort,
+            printerPort: printerPort,
         };
         processor = new Cpu6502(model, dbgr, video, soundChip, ddNoise, cmos, emulationConfig);
 
@@ -605,7 +649,6 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
                     if (all.length) _.delay(doSome, Delay, remaining);
                 }
 
-                console.log("Found", cat.length, "STH entries");
                 doSome(cat);
             };
         }
@@ -1323,6 +1366,10 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
                     dbgr.debug(processor.pc);
                     throw e;
                 }
+                if (stepEmuWhenPaused) {
+                    stop(false);
+                    stepEmuWhenPaused = false;
+                }
             }
             last = now;
         }
@@ -1384,7 +1431,6 @@ require(['jquery', 'underscore', 'utils', 'video', 'soundchip', 'ddnoise', 'debu
                 } else {
                     width = height * desiredAspectRatio;
                 }
-                console.log(width / height, desiredAspectRatio);
                 $('#cub-monitor').height(height).width(width);
                 $('#cub-monitor-pic').height(height).width(width);
                 $screen.height(height * cubToScreenHeightRatio).width(width * cubToScreenWidthRatio);

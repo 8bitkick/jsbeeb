@@ -422,6 +422,8 @@ define(['./utils', './6502.opcodes', './via', './acia', './serial', './tube', '.
                 config.cpuMultiplier = 1;
             if (!config.userPort)
                 config.userPort = new FakeUserPort();
+            if (config.printerPort === undefined)
+                config.printerPort = null;
             config.extraRoms = config.extraRoms || [];
             return config;
         }
@@ -933,9 +935,12 @@ define(['./utils', './6502.opcodes', './via', './acia', './serial', './tube', '.
                     this.soundChip.setScheduler(this.scheduler);
                     this.sysvia = via.SysVia(this, this.video, this.soundChip, cmos, model.isMaster, config.keyLayout);
                     this.uservia = via.UserVia(this, model.isMaster, config.userPort);
+                    if (config.printerPort)
+                        this.uservia.ca2changecallback = config.printerPort.outputStrobe;
                     this.touchScreen = new TouchScreen(this.scheduler);
                     this.acia = new Acia(this, this.soundChip.toneGenerator, this.scheduler, this.touchScreen);
                     this.serial = new Serial(this.acia);
+                    this.ddNoise.spinDown();
                     this.fdc = new model.Fdc(this, this.ddNoise, this.scheduler);
                     this.crtc = this.video.crtc;
                     this.ula = this.video.ula;
